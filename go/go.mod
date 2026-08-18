@@ -4,9 +4,9 @@ go 1.26
 
 require (
 	github.com/metacubex/mihomo v1.19.30
-	github.com/sagernet/sing v0.8.12
-	github.com/sagernet/sing-box v1.13.18
-	github.com/sagernet/sing-tun v0.8.12-0.20260727151122-3a09076491df
+	github.com/sagernet/sing v0.8.13
+	github.com/sagernet/sing-box v1.13.19
+	github.com/sagernet/sing-tun v0.8.12-0.20260810140523-7c73233bd0fb
 	github.com/xtls/xray-core v1.260327.0
 	golang.org/x/mobile v0.0.0-20260410095206-2cfb76559b7b
 )
