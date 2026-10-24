@@ -1,9 +1,14 @@
 // swift-tools-version:5.9
 //
-// Auto-generated for the v2026.10.24 release by
-// .github/workflows/upstream-watch.yml. The `main` branch
-// keeps a local `binaryTarget(path:)` variant for in-tree
-// development; this variant lives only on the tag.
+// `main` ships with a local `binaryTarget(path:)` so the package
+// resolves directly against the on-disk xcframework — run
+// `Scripts/build.sh` once, then `.package(path: "../EverywhereCore")`
+// works in both consuming apps without a network round-trip.
+//
+// `Scripts/release.sh vX.Y.Z` rewrites this file to use
+// `binaryTarget(url:, checksum:)` on the tagged commit only, then
+// restores this version on `main`. Tagged consumers resolve against
+// the GitHub Release asset; `main` consumers stay on the local path.
 
 import PackageDescription
 
@@ -17,10 +22,6 @@ let package = Package(
         .library(name: "EverywhereCore", targets: ["EverywhereCore"]),
     ],
     targets: [
-        .binaryTarget(
-            name: "EverywhereCore",
-            url: "https://github.com/NodePassProject/EverywhereCore/releases/download/v2026.10.24/EverywhereCore-v2026.10.24.xcframework.zip",
-            checksum: "af465f77a4c93b16c9a35eeeff5bf3f90bf06790af34b5911954bca9cf8c4fd2"
-        ),
+        .binaryTarget(name: "EverywhereCore", path: "EverywhereCore.xcframework"),
     ]
 )
