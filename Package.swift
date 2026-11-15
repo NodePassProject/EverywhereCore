@@ -12,6 +12,10 @@ let package = Package(
         .library(name: "EverywhereCore", targets: ["EverywhereCore"]),
     ],
     targets: [
-        .binaryTarget(name: "EverywhereCore", path: "EverywhereCore.xcframework"),
+        .binaryTarget(
+            name: "EverywhereCore",
+            url: "https://github.com/NodePassProject/EverywhereCore/releases/download/v2026.11.15/EverywhereCore-v2026.11.15.xcframework.zip",
+            checksum: "9822390d91ecf9b728624462f8a2fd5d8a9ffeec00731cca2e00e5668cbb11fe"
+        ),
     ]
 )
