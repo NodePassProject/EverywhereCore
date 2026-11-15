@@ -2,6 +2,7 @@ package evcore
 
 import (
 	"context"
+	"fmt"
 	"net/netip"
 	"os"
 	"sync"
@@ -56,19 +57,13 @@ func (s *singBoxRunner) updateDefaultInterface(name string, index int32, isExpen
 	s.platform.monitor.updateDefault(nm, name, index, isExpensive, isConstrained)
 }
 
+func (s *singBoxRunner) control(method string, _ []byte) (any, error) {
+	return nil, fmt.Errorf("%w: %s", errControlUnsupported, method)
+}
+
 func startSingBox(configContent string, tunFD, _ int) (coreRunner, error) {
-	// include.Context attaches the built-in inbound/outbound/endpoint/
-	// DNS-transport/service registries to the context. Without it
-	// box.New cannot resolve types declared in the JSON (socks,
-	// direct, vmess, …) and start fails immediately.
 	ctx := include.Context(context.Background())
 
-	// box.New runs pause.WithDefaultManager on its own copy of the
-	// context, so the manager it installs is unreachable from out here.
-	// Install one on our ctx up front and box.New will reuse it
-	// (WithDefaultManager early-returns when a manager is already
-	// registered), which lets us hand DevicePause/DeviceWake to the
-	// NE's sleep/wake callbacks.
 	ctx = pause.WithDefaultManager(ctx)
 	pauseManager := service.FromContext[pause.Manager](ctx)
 
@@ -93,13 +88,6 @@ func startSingBox(configContent string, tunFD, _ int) (coreRunner, error) {
 	return &singBoxRunner{box: b, pauseManager: pauseManager, platform: pi}, nil
 }
 
-// singBoxPlatform is the minimal adapter.PlatformInterface needed
-// to inject an existing utun fd into sing-box's tun inbound.
-//
-// Layout matches libbox's stub (experimental/libbox/config.go), but
-// `UsePlatformInterface` returns true so the tun inbound calls
-// OpenInterface, and `UnderNetworkExtension` returns true so MTU
-// defaults match the iOS NE constraints.
 type singBoxPlatform struct {
 	tunFD       int
 	myAddresses []netip.Addr
@@ -121,9 +109,6 @@ func (p *singBoxPlatform) AutoDetectInterfaceControl(_ int) error      { return 
 func (p *singBoxPlatform) UsePlatformInterface() bool { return true }
 
 func (p *singBoxPlatform) OpenInterface(options *tun.Options, _ option.TunPlatformOptions) (tun.Tun, error) {
-	// Dup the fd so sing-tun's Close (which closes its os.File)
-	// doesn't tear down the underlying NEPacketTunnelFlow utun while
-	// the Network Extension still holds the original.
 	dupFd, err := syscall.Dup(p.tunFD)
 	if err != nil {
 		return nil, err
@@ -138,12 +123,6 @@ func (p *singBoxPlatform) OpenInterface(options *tun.Options, _ option.TunPlatfo
 	return tun.New(*options)
 }
 
-// ProcessPlatformOptions is where desktop platforms apply the tun
-// inbound's `platform.http_proxy` block to the OS proxy settings. iOS
-// has no such system-wide knob from inside a Network Extension, so
-// this is a no-op — same as libbox's own stub. The tun inbound calls
-// it right after OpenInterface and tears the interface back down if
-// it returns an error, so returning nil is load-bearing.
 func (p *singBoxPlatform) ProcessPlatformOptions(_ option.TunPlatformOptions) error {
 	return nil
 }
@@ -164,9 +143,6 @@ func (p *singBoxPlatform) NetworkExtensionIncludeAllNetworks() bool { return fal
 func (p *singBoxPlatform) ClearDNSCache()                       {}
 func (p *singBoxPlatform) RequestPermissionForWIFIState() error { return nil }
 
-// ReadWIFIState took a context in 1.14 — sing-box now calls it from
-// NetworkManager.UpdateWIFIState(ctx) so a slow platform-side lookup
-// can be cancelled. We answer from memory, so the context is unused.
 func (p *singBoxPlatform) ReadWIFIState(_ context.Context) adapter.WIFIState {
 	return adapter.WIFIState{}
 }
@@ -180,27 +156,16 @@ func (p *singBoxPlatform) UsePlatformWIFIMonitor() bool                   { retu
 func (p *singBoxPlatform) UsePlatformNotification() bool                  { return false }
 func (p *singBoxPlatform) SendNotification(_ *adapter.Notification) error { return nil }
 
-// CancelNotification is new in 1.14; it pairs with SendNotification so
-// a core can retract a notification it posted. We never post one.
 func (p *singBoxPlatform) CancelNotification(_ string, _ int32) error { return nil }
 
 func (p *singBoxPlatform) MyInterfaceAddress() []netip.Addr { return p.myAddresses }
 
-// Neighbor resolution (1.14) backs tailscale's peer/MAC lookups. iOS
-// gives a Network Extension no ARP/NDP table, so we decline: with
-// UsePlatformNeighborResolver false, sing-box never calls the monitor
-// hooks and falls back to its own resolver.
 func (p *singBoxPlatform) UsePlatformNeighborResolver() bool { return false }
 func (p *singBoxPlatform) StartNeighborMonitor(_ adapter.NeighborUpdateListener) error {
 	return os.ErrInvalid
 }
 func (p *singBoxPlatform) CloseNeighborMonitor(_ adapter.NeighborUpdateListener) error { return nil }
 
-// Platform shell (1.14) is what lets a tailscale endpoint serve SSH
-// into the host. That is a desktop-daemon capability — an iOS NE has
-// no PTY, no user database, and no SFTP server — so every hook
-// declines. CheckPlatformShell returns nil (not an error) to match
-// libbox: it is a capability probe, not a failure path.
 func (p *singBoxPlatform) UsePlatformShell() bool    { return false }
 func (p *singBoxPlatform) CheckPlatformShell() error { return nil }
 func (p *singBoxPlatform) OpenShellSession(_ *adapter.PlatformUser, _ string, _ []string, _ string, _, _ int32) (adapter.ShellSession, error) {
@@ -213,26 +178,11 @@ func (p *singBoxPlatform) LookupSFTPServer() (string, error)     { return "", os
 func (p *singBoxPlatform) ReadSystemSSHHostKey() ([]byte, error) { return nil, os.ErrInvalid }
 func (p *singBoxPlatform) TailscaleHostname() string             { return "" }
 
-// Bridge (1.14) asks the platform for a second utun to hand another
-// process. NEPacketTunnelProvider owns exactly one interface, so we
-// decline and sing-box skips the feature.
 func (p *singBoxPlatform) UsePlatformBridge() bool { return false }
 func (p *singBoxPlatform) CreateBridge(_ adapter.BridgeOptions) (adapter.BridgeSession, error) {
 	return nil, os.ErrInvalid
 }
 
-// singBoxInterfaceMonitor is a tun.DefaultInterfaceMonitor driven from
-// outside Go — typically by an NWPathMonitor on the iOS side feeding
-// Evcore.UpdateDefaultInterface. Without this, sing-box's router never
-// learns that the underlying network changed and sockets pinned to a
-// stale path keep retransmitting until OS-level timeouts.
-//
-// Layout mirrors libbox's `platformDefaultInterfaceMonitor`
-// (experimental/libbox/monitor.go): refresh sing-box's cached
-// interface list, look the new default up by index, fan callbacks
-// out under a mutex. When the index is -1 we signal `no path` by
-// calling callbacks with a nil interface, which the network manager
-// translates into `pauseManager.NetworkPause`.
 type singBoxInterfaceMonitor struct {
 	access       sync.Mutex
 	current      *control.Interface
@@ -279,11 +229,6 @@ func (m *singBoxInterfaceMonitor) MyInterfaces() []string {
 	return m.myInterfaces
 }
 
-// updateDefault sets the monitor's default interface and fans out a
-// callback. nm is used to refresh sing-box's cached interface list
-// and resolve the new default by index — when the manager is missing
-// (start-up race) or the lookup fails we still fire a synthetic
-// control.Interface so the router gets at least a name/index.
 func (m *singBoxInterfaceMonitor) updateDefault(nm adapter.NetworkManager, name string, index int32, _ bool, _ bool) {
 	if nm != nil {
 		_ = nm.UpdateInterfaces()
@@ -305,8 +250,6 @@ func (m *singBoxInterfaceMonitor) updateDefault(nm adapter.NetworkManager, name 
 	old := m.current
 	m.current = newInterface
 	if newInterface != nil && old != nil && old.Index == newInterface.Index && old.Name == newInterface.Name {
-		// Identical to the previous default — no need to fan callbacks
-		// out and trigger a ResetNetwork.
 		m.access.Unlock()
 		return
 	}

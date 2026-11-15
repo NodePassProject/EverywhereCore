@@ -6,39 +6,33 @@ import (
 
 	"github.com/xtls/xray-core/core"
 
-	// Register inbound, outbound, transport handlers via init().
 	_ "github.com/xtls/xray-core/main/distro/all"
-	// Register the JSON config loader. Importing main/json transitively
-	// pulls in infra/conf, which registers `tun` as an inbound type and
-	// brings in proxy/tun whose init() registers the handler.
 	_ "github.com/xtls/xray-core/main/json"
 )
 
 type xrayRunner struct {
 	instance *core.Instance
+	ctl      *xrayControl
 }
 
 func (x *xrayRunner) stop() error {
+	if x.ctl != nil {
+		x.ctl.close()
+	}
 	if x.instance != nil {
 		return x.instance.Close()
 	}
 	return nil
 }
 
-// suspend / resume / updateDefaultInterface are no-ops: xray-core has
-// no public pause hook and no platform interface monitor. The Swift
-// side still calls them on every core to keep the bridge surface
-// uniform.
 func (x *xrayRunner) suspend()                                            {}
 func (x *xrayRunner) resume()                                             {}
 func (x *xrayRunner) updateDefaultInterface(_ string, _ int32, _, _ bool) {}
 
-// startXray boots Xray with a TUN inbound bound to the given FD.
-// Xray's iOS TUN path reads the FD from the env var `xray.tun.fd`
-// (see proxy/tun/tun_darwin.go) — the JSON's tun inbound only
-// declares the protocol; the FD comes from here. ConfigNormalizer
-// on the Swift side is responsible for adding the inbound; we only
-// stage the env var.
+func (x *xrayRunner) control(method string, params []byte) (any, error) {
+	return x.ctl.handle(method, params)
+}
+
 func startXray(configContent string, tunFD, _ int) (coreRunner, error) {
 	if err := os.Setenv("xray.tun.fd", strconv.Itoa(tunFD)); err != nil {
 		return nil, err
@@ -47,5 +41,5 @@ func startXray(configContent string, tunFD, _ int) (coreRunner, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &xrayRunner{instance: inst}, nil
+	return &xrayRunner{instance: inst, ctl: newXrayControl(inst, configContent)}, nil
 }

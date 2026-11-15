@@ -31,6 +31,10 @@ Scripts/build.sh           # gomobile bind, deps fetched from Go proxy
 Produces `./EverywhereCore.xcframework` with `ios-arm64`,
 `ios-arm64_x86_64-simulator`, and `macos-arm64_x86_64` slices.
 
+To build fewer slices — each is a full compile of all three cores —
+set `EVCORE_TARGETS`, e.g. `EVCORE_TARGETS=iossimulator/arm64
+Scripts/build.sh` for simulator-only work.
+
 ## Consuming from an Xcode project
 
 ```swift

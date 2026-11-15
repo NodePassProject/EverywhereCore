@@ -1,21 +1,5 @@
 #!/usr/bin/env bash
-# Builds EverywhereCore.xcframework via gomobile bind. The output is a
-# fat xcframework with ios-arm64, ios-arm64_x86_64-simulator, and
-# macos-arm64_x86_64 slices — one binary serves both Apple-platform
-# consumers.
-#
-# The three core dependencies (mihomo, sing-box, xray-core) are
-# resolved from the Go module proxy via go.mod, not vendored. Upstream
-# version bumps land here through .github/workflows/upstream-watch.yml.
-#
-# gomobile produces a *static* framework — the binary inside .framework
-# is an `ar` archive, not a Mach-O dylib. dsymutil cannot process that,
-# so we strip Go-side debug info via -ldflags="-s -w" instead. Result:
-# no dSYM is needed (or expected by Apple's archive validator), and
-# the framework is also smaller. The trade-off is no Go stack
-# symbolication in crash reports — but Go panics surface inside the
-# runtime's own panic handler and rarely show up in Apple crash
-# reports anyway.
+# Builds EverywhereCore.xcframework via gomobile bind.
 
 set -euo pipefail
 
@@ -37,22 +21,6 @@ fi
 cd "$CORE_DIR"
 
 # --- Symmetric varz patch -------------------------------------------------
-# Two tailscale forks live in the dep graph: github.com/sagernet/tailscale
-# (sing-box, gated on with_tailscale) and github.com/metacubex/tailscale
-# (mihomo, unconditional). Each fork's tsweb/varz/init() registers six
-# expvars with hardcoded names ("process_start_unix_time", "version",
-# "go_version", "counter_uptime_sec", "gauge_goroutines", and — behind a
-# /proc/stat probe that only succeeds on Linux — "node_boot_time_seconds").
-# expvar.Publish panics on duplicate names — two distinct module paths run
-# two distinct init()s against the same process-global registry → boom on
-# the second. We rename the sixth too even though its guard makes it dead
-# on Apple platforms: it costs one sed line and keeps the invariant
-# "no name either fork publishes is left unprefixed" true by construction.
-#
-# We patch each fork in a writable copy of its module-cache source,
-# prefix each published name with the fork's vendor so they coexist,
-# and add `replace` directives so the build links the patched copies.
-# Replaces are dropped on EXIT so go.mod stays clean in version control.
 PATCHED_ROOT="$CORE_DIR/.patched"
 
 cleanup_replaces() {
@@ -60,7 +28,6 @@ cleanup_replaces() {
     go mod edit -dropreplace=github.com/metacubex/tailscale 2>/dev/null || true
 }
 trap cleanup_replaces EXIT
-# Start clean in case a prior interrupted run left a replace behind.
 cleanup_replaces
 
 echo "→ go mod tidy"
@@ -81,7 +48,6 @@ apply_varz_patch() {
     if [[ ! -d "$src" ]]; then
         go mod download "$module@$version"
     fi
-    # Cache by version: if already patched at this version, reuse.
     if [[ ! -f "$dest/tsweb/varz/varz.go" ]]; then
         rm -rf "$dest"
         mkdir -p "$dest"
@@ -104,11 +70,6 @@ apply_varz_patch() {
 apply_varz_patch github.com/sagernet/tailscale  sagernet  sagernet-tailscale
 apply_varz_patch github.com/metacubex/tailscale metacubex metacubex-tailscale
 
-# Build tags enable optional features in upstream cores. We ship the
-# subset that makes sense for an iOS NEPacketTunnelProvider client —
-# inbound/server-only tags and big-tree extras (anthropic/openai SDK
-# service registries, ACME issuance, v2ray stats gRPC, DHCP DNS
-# probing) are dropped. See PATCHES.md for the rationale.
 BUILD_TAGS="\
 with_clash_api \
 with_grpc \
@@ -118,15 +79,14 @@ with_tailscale \
 with_utls \
 with_wireguard"
 
-# -s: strip Go symbol table.  -w: strip DWARF.  Together they remove
-# both the metadata Apple's archive validator wants a dSYM for and a
-# noticeable chunk of binary size.
 LDFLAGS="-s -w"
 
-echo "→ gomobile bind tags=$BUILD_TAGS"
+TARGETS="${EVCORE_TARGETS:-ios,iossimulator,macos}"
+
+echo "→ gomobile bind target=$TARGETS tags=$BUILD_TAGS"
 rm -rf "$OUT"
 gomobile bind \
-    -target=ios,iossimulator,macos \
+    -target="$TARGETS" \
     -tags="$BUILD_TAGS" \
     -ldflags="$LDFLAGS" \
     -o "$OUT" .

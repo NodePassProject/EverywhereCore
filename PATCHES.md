@@ -275,6 +275,51 @@ tunnel work fine, but the clash REST API never starts and yacd shows
 `hub.ApplyConfig` returns no error — failures inside it are logged via
 mihomo's own logger.
 
+### Xray-core: dashboard data is served in-process (`Control`)
+
+mihomo and sing-box bring a clash API the app's dashboard can talk to.
+Xray-core doesn't: its gRPC API would need an HTTP/2 client on the
+Swift side, and the `metrics` expvar endpoint is read-only. So
+`go/xray_control.go` answers the dashboard through the bound
+`Control(method, paramsJSON)` function, using the same feature
+interfaces Xray's own gRPC services sit on:
+
+| Method    | Backed by                                                        |
+| --------- | ---------------------------------------------------------------- |
+| `info`    | the JSON config the instance was started with (outbounds, rules) |
+| `proxies` | `routing.BalancerOverrider` / `BalancerPrincipleTarget`, `outbound.HandlerSelector`, `extension.Observatory` |
+| `select`  | `routing.BalancerOverrider.SetOverrideTarget` (what `RoutingService.OverrideBalancerTarget` calls) |
+| `delay`   | `tagged.Dialer` with the outbound tag forced — the technique `app/observatory` uses |
+| `stats`   | `VisitCounters` on the stats manager (`outbound>>>tag>>>traffic>>>uplink` …) |
+| `logs`    | a tee on `common/log`'s process-global handler                   |
+
+Things that are easy to break on an upstream bump:
+
+- **Instance context.** `tagged.Dialer` refuses a context without the
+  running instance in it, and `core.toContext` is unexported. The
+  bridge builds one with `context.WithValue(ctx, core.XrayKey(1), inst)`
+  — `XrayKey` is exported "for test" and its value is the unexported
+  `xrayKey` constant. If upstream changes either, `delay` starts
+  failing with "Instance context variable is not in context".
+- **Balancer and rule names come from the config, not the router.**
+  `Router.balancers` and `Router.rules` are unexported, so the bridge
+  re-parses the config for tags and only asks the router about them by
+  tag. A balancer or rule added at runtime through Xray's own API
+  would not show up.
+- **`VisitCounters` is asserted, not assumed.** It is on the concrete
+  `app/stats.Manager` in every version and only joined the
+  `features/stats.Manager` interface later; the bridge uses a local
+  one-method interface so it builds against both.
+- **Log tee.** `app/log.Instance` registers itself as the global
+  handler in its constructor; the bridge wraps it after start and puts
+  it back on stop. Capture is off until someone polls `logs` and stops
+  15 s after the last poll, so an idle dashboard costs one atomic load
+  per record.
+
+The stats counters only exist when the config has a `stats` object and
+`policy.system.statsOutboundUplink/Downlink`; the app's ConfigNormalizer
+adds them while its dashboard is enabled.
+
 ## Future source patches
 
 The Go module cache is read-only by design, so patching upstream

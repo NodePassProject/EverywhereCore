@@ -1,16 +1,8 @@
 name: Upstream watch
 
-# Daily sweep: queries the Go module proxy for the latest tags of the
-# three core deps (mihomo, sing-box, xray-core). If any have moved
-# beyond what's pinned in go/go.mod, bump them, rebuild the
-# xcframework, tag a v<YYYY.MM.DD> release, and publish the zip as a
-# GitHub Release asset. Multiple bumps on the same day are batched
-# into one release. Same-day re-runs (manual force) append .1, .2…
-# to the tag.
-
 on:
   schedule:
-    - cron: '0 8 * * *'  # 08:00 UTC daily
+    - cron: '0 8 * * *'
   workflow_dispatch:
     inputs:
       force_release:
@@ -58,17 +50,10 @@ jobs:
         run: |
           set -euo pipefail
 
-          # The Go proxy's /@latest endpoint is defined to return the
-          # newest *stable* tag (no pre-releases) for a module. We
-          # query it directly rather than `go list -m -versions`, which
-          # would happily include `v1.14.0-alpha.23` in its output.
-          # For xray-core this returns the Go-module-compatible
-          # v1.YYMMDD.0 tag, not the human v26.x.x.
           latest() {
             curl -sSf "https://proxy.golang.org/$1/@latest" | jq -r '.Version'
           }
 
-          # Current pin = the version go.mod's require block resolves to.
           current() { go list -m -f '{{.Version}}' "$1"; }
 
           mihomo_latest=$(latest github.com/metacubex/mihomo)
@@ -142,7 +127,6 @@ jobs:
           base="v$(date -u +%Y.%m.%d)"
           tag="$base"
           n=1
-          # Already taken? Append .1, .2, … (manual force on the same day).
           while git rev-parse --verify --quiet "refs/tags/$tag" >/dev/null; do
             n=$((n+1))
             tag="$base.$n"
@@ -155,18 +139,6 @@ jobs:
         run: |
           set -euo pipefail
           zip_name="EverywhereCore-${{ steps.tag.outputs.tag }}.xcframework.zip"
-          # `ditto -c -k`, not `zip -r`: macOS frameworks rely on a
-          # symlink farm (`EverywhereCore.framework/EverywhereCore →
-          # Versions/Current/EverywhereCore`, `Versions/Current → A`,
-          # etc). Plain `zip` follows those symlinks and stores the
-          # dereferenced contents, so SwiftPM's extracted artifact
-          # ends up with duplicated regular files where symlinks
-          # should be — `codesign` then refuses the embedded
-          # framework with "code object is not signed at all".
-          # `ditto -c -k --sequesterRsrc --keepParent` is Apple's
-          # canonical bundle archiver: it preserves symlinks,
-          # resource forks, and xattrs, and produces a PKZip stream
-          # `swift package compute-checksum` reads the same way.
           ditto -c -k --sequesterRsrc --keepParent \
             EverywhereCore.xcframework "$zip_name"
           sha=$(swift package compute-checksum "$zip_name")
@@ -178,19 +150,10 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Stash main's dev Package.swift; restored on top of the
-          # release commit so main HEAD keeps the local-path form.
           dev_package=$(cat Package.swift)
 
-          # Release-flavored Package.swift: SwiftPM consumers pin a tag
-          # and resolve against the GitHub Release asset.
           cat > Package.swift <<EOF
           // swift-tools-version:5.9
-          //
-          // Auto-generated for the ${{ steps.tag.outputs.tag }} release by
-          // .github/workflows/upstream-watch.yml. The \`main\` branch
-          // keeps a local \`binaryTarget(path:)\` variant for in-tree
-          // development; this variant lives only on the tag.
 
           import PackageDescription
 
@@ -225,14 +188,10 @@ jobs:
 
           git tag -a "${{ steps.tag.outputs.tag }}" -m "${{ steps.tag.outputs.tag }}"
 
-          # Restore the dev Package.swift on top of the release commit so
-          # main consumers keep resolving the on-disk xcframework.
           printf '%s' "$dev_package" > Package.swift
           git add Package.swift
           git commit -m "post-release: restore dev Package.swift"
 
-          # Tag + main in a single push. HEAD is detached at the
-          # checked-out SHA; HEAD:main pushes it to the main branch.
           git push origin "HEAD:${{ github.event.repository.default_branch }}" "${{ steps.tag.outputs.tag }}"
 
       - name: Create GitHub Release
